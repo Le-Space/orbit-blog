@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { waitForLoadingOverlayToSettle } from './pageLoad';
+import { closeSidebarOverlayIfPresent, waitForLoadingOverlayToSettle } from './pageLoad';
 
 test.describe('Realtime comments between Alice and Bob', () => {
   test('Bob comments on Alice post and Alice replies without reload', async ({ browser }) => {
@@ -99,6 +99,7 @@ test.describe('Realtime comments between Alice and Bob', () => {
 
     const bobPostTitle = pageBob.getByTestId('post-item-title').filter({ hasText: 'Realtime comments post' });
     await expect(bobPostTitle).toBeVisible({ timeout: 120000 });
+    await closeSidebarOverlayIfPresent(pageBob);
     await bobPostTitle.first().click();
     await expect(pageBob.getByTestId('post-title')).toContainText('Realtime comments post');
 

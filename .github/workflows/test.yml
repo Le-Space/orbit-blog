@@ -113,12 +113,17 @@ jobs:
 
     - name: Run ${{ matrix.spec }}
       # Playwright config starts the Vite dev server, and globalSetup starts the relay.
-      # Keep the dedicated WebRTC direct-connectivity spec in `.github/workflows/webrtc-compare.yml`
-      # so the main suite stays stable while we track relay-mode differences separately.
+      #
+      # `Remote Direct WebRTC Connectivity` used to be excluded here to keep the
+      # main suite stable — but that title is the only describe block in
+      # WebRTCDirectConnectivity.spec.ts, so the exclusion silenced the whole
+      # spec and the job reported green having run nothing. The reason for it is
+      # also gone: specs no longer share a job, so a flaky one can only redden
+      # its own check. And the spec is not flaky — webrtc-compare ran it against
+      # a local relay and it passed in 17s.
       run: |
         pnpm exec playwright test "tests/${{ matrix.spec }}" \
           --project=chromium \
-          --grep-invert "Remote Direct WebRTC Connectivity" \
           --pass-with-no-tests
 
     - name: Upload failure artefacts

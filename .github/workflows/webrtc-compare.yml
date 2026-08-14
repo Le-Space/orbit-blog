@@ -1,6 +1,14 @@
 name: WebRTC Compare
 
 on:
+  # The `remote` half of this matrix dials a live public relay, so it fails when
+  # that relay is unreachable for reasons unrelated to the commit. That belongs on
+  # a schedule rather than in the PR path, where it would redden pull requests
+  # over someone else's infrastructure. Until now the only automatic trigger was a
+  # push to `e2e-relay-pinner`, a branch that did not exist, so this workflow
+  # effectively never ran on its own.
+  schedule:
+    - cron: '17 5 * * *'
   push:
     branches: [ e2e-relay-pinner ]
   workflow_dispatch:
