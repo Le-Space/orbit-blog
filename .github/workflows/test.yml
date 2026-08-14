@@ -6,22 +6,91 @@ on:
   pull_request:
     branches: [ main, master, e2e-relay-pinner ]
 
+# Shared by every job so the relay behaves exactly as it did in the previous
+# single-job layout.
+env:
+  TEST_PRIVATE_KEY: 08011240821cb6bc3d4547fcccb513e82e4d718089f8a166b23ffcd4a436754b6b0774cf07447d1693cd10ce11ef950d7517bad6e9472b41a927cd17fc3fb23f8c70cd99
+  # Avoid flakes: GitHub runners can have 9090 occupied.
+  METRICS_PORT: 0
+  # The local Mocha relay only needs WebSockets. Native UDP transports are not
+  # available on every hosted runner, and public discovery is unnecessary because
+  # the test peers dial the deterministic loopback relay directly.
+  RELAY_DISABLE_QUIC: 'true'
+  RELAY_DISABLE_WEBRTC: 'true'
+  RELAY_DISABLE_IPV6: 'true'
+  RELAY_DISABLE_BOOTSTRAP: 'true'
+  RELAY_DISABLE_DHT: 'true'
+  RELAY_DISABLE_AUTONAT: 'true'
+
 jobs:
-  test:
+  mocha:
+    name: mocha
     runs-on: ubuntu-latest
-    env:
-      TEST_PRIVATE_KEY: 08011240821cb6bc3d4547fcccb513e82e4d718089f8a166b23ffcd4a436754b6b0774cf07447d1693cd10ce11ef950d7517bad6e9472b41a927cd17fc3fb23f8c70cd99
-      # Avoid flakes: GitHub runners can have 9090 occupied.
-      METRICS_PORT: 0
-      # The local Mocha relay only needs WebSockets. Native UDP transports are not
-      # available on every hosted runner, and public discovery is unnecessary because
-      # the test peers dial the deterministic loopback relay directly.
-      RELAY_DISABLE_QUIC: 'true'
-      RELAY_DISABLE_WEBRTC: 'true'
-      RELAY_DISABLE_IPV6: 'true'
-      RELAY_DISABLE_BOOTSTRAP: 'true'
-      RELAY_DISABLE_DHT: 'true'
-      RELAY_DISABLE_AUTONAT: 'true'
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v6
+      with:
+        version: 10.33.0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '22'
+        cache: 'pnpm'
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Run Mocha tests
+      env:
+        # Mocha libp2p tests expect at least one seed node so pubsub peer discovery can find peers.
+        # Use the locally started relay (default ws port 9092) and the relay's fixed test peer id.
+        VITE_SEED_NODES_DEV: /ip4/127.0.0.1/tcp/9092/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE
+        VITE_SEED_NODES: /ip4/127.0.0.1/tcp/9092/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE
+        VITE_P2P_PUPSUB_DEV: todo._peer-discovery._p2p._pubsub
+        VITE_P2P_PUPSUB: todo._peer-discovery._p2p._pubsub
+      run: |
+       pnpm run relay:test &
+       RELAY_PID=$!
+       trap "kill $RELAY_PID" EXIT
+       sleep 10
+       pnpm exec mocha "test/**/*.test.js"
+
+  # The spec list is read from disk rather than hardcoded, so a new spec file is
+  # picked up by the matrix without anyone remembering to add it here. This
+  # mirrors what scripts/run-e2e-specs.mjs does with readdirSync.
+  discover-specs:
+    name: discover specs
+    runs-on: ubuntu-latest
+    outputs:
+      specs: ${{ steps.list.outputs.specs }}
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: List e2e specs
+      id: list
+      shell: bash
+      run: |
+        specs=$(ls tests/*.spec.ts | xargs -n1 basename | sort | jq -R . | jq -sc .)
+        echo "specs=$specs" >> "$GITHUB_OUTPUT"
+        echo "Discovered specs: $specs"
+
+  # One spec per runner. Previously every spec ran sequentially in a single job,
+  # so the relay, the Vite dev server and two Chromium contexts competed for two
+  # cores across the whole run — and run-e2e-specs.mjs aborted at the first
+  # failure, so the specs after it were never reported. Splitting gives each
+  # spec its own machine and an independent result.
+  e2e:
+    name: e2e (${{ matrix.spec }})
+    needs: discover-specs
+    runs-on: ubuntu-latest
+    strategy:
+      # One flaky spec must not cancel the others; we want the full picture.
+      fail-fast: false
+      matrix:
+        spec: ${{ fromJSON(needs.discover-specs.outputs.specs) }}
     steps:
     - uses: actions/checkout@v6
 
@@ -42,24 +111,21 @@ jobs:
     - name: Install Playwright Browsers
       run: pnpm exec playwright install --with-deps
 
-    - name: Run Mocha tests
-      env:
-        # Mocha libp2p tests expect at least one seed node so pubsub peer discovery can find peers.
-        # Use the locally started relay (default ws port 9092) and the relay's fixed test peer id.
-        VITE_SEED_NODES_DEV: /ip4/127.0.0.1/tcp/9092/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE
-        VITE_SEED_NODES: /ip4/127.0.0.1/tcp/9092/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE
-        VITE_P2P_PUPSUB_DEV: todo._peer-discovery._p2p._pubsub
-        VITE_P2P_PUPSUB: todo._peer-discovery._p2p._pubsub
+    - name: Run ${{ matrix.spec }}
+      # Playwright config starts the Vite dev server, and globalSetup starts the relay.
+      # Keep the dedicated WebRTC direct-connectivity spec in `.github/workflows/webrtc-compare.yml`
+      # so the main suite stays stable while we track relay-mode differences separately.
       run: |
-       pnpm run relay:test &
-       RELAY_PID=$!
-       trap "kill $RELAY_PID" EXIT
-       sleep 10
-       pnpm exec mocha "test/**/*.test.js"
+        pnpm exec playwright test "tests/${{ matrix.spec }}" \
+          --project=chromium \
+          --grep-invert "Remote Direct WebRTC Connectivity" \
+          --pass-with-no-tests
 
-    - name: Run e2e tests
-      run: |
-        # Playwright config starts the Vite dev server, and globalSetup starts the relay.
-        # Keep the dedicated WebRTC direct-connectivity spec in `.github/workflows/webrtc-compare.yml`
-        # so the main suite stays stable while we track relay-mode differences separately.
-        DEBUG=playwright:* pnpm test:e2e -- --project=chromium --grep-invert "Remote Direct WebRTC Connectivity" --pass-with-no-tests
+    - name: Upload failure artefacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-${{ matrix.spec }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: test-results
+        if-no-files-found: ignore
+        retention-days: 7

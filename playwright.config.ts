@@ -21,6 +21,14 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 30_000 },
 
+  // A hosted runner has two cores, shared between the relay, the Vite dev
+  // server and two Chromium contexts each running libp2p and OrbitDB. Under
+  // that contention a peer can lose its relay connection and not get it back
+  // inside the test budget, which is why runs on identical commits have failed
+  // in three different specs and then passed on re-run. Locally, on four cores,
+  // the same specs pass repeatedly. Retry rather than read that as a defect.
+  retries: process.env.CI ? 2 : 0,
+
   globalSetup: './tests/global-setup.ts',
   globalTeardown: './tests/global-teardown.ts',
 
