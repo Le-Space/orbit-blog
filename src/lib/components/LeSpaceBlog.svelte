@@ -430,10 +430,16 @@ https://svelte.dev/e/store_invalid_scoped_subscription -->
    * Check if the user has write access to the posts database
   */
   $effect(() => {
-    if ($orbitdb && $postsDB && $identity) {
-      const postsAddr = $postsDB.address?.toString?.() || String($postsDB.address || '');
-      canWrite = Boolean(ownerIdentityId && ownerIdentityId === $identity.id) && (postsAddr === $postsDBAddress)
+    // No posts database means no write access. The guard used to only *raise*
+    // canWrite and never lower it, so a value computed for the previous blog
+    // survived a switch to someone else's — the visitor kept the post form on a
+    // blog they cannot write to.
+    if (!$orbitdb || !$postsDB || !$identity) {
+      canWrite = false;
+      return;
     }
+    const postsAddr = $postsDB.address?.toString?.() || String($postsDB.address || '');
+    canWrite = Boolean(ownerIdentityId && ownerIdentityId === $identity.id) && (postsAddr === $postsDBAddress)
   });
 
   onDestroy(async () => {

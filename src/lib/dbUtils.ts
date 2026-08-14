@@ -595,7 +595,18 @@ export async function switchToRemoteDB(address: string, showModal = false) {
       updateLoadingState('connecting_peers', `Connected to ${peers?.length || 0} peers`, 20);
       
       // First clear stores to prevent stale data display/writes during remote switch.
+      //
+      // postsDB and postsDBAddress belong here too, and leaving them out was a
+      // write-access hole: they are the two stores canWrite is computed from.
+      // When the remote settings have not replicated their postsDBAddress entry
+      // yet, openOrCreateDB below correctly refuses to create one for a remote
+      // blog and returns undefined — so without this, both stores keep pointing
+      // at the visitor's *own* posts database while settingsDB already shows
+      // someone else's blog. canWrite then finds a posts DB the visitor owns and
+      // renders the post form on a blog they cannot write to.
       posts.set([]);
+      postsDB.set(null);
+      postsDBAddress.set(null);
       commentsDB.set(null);
       mediaDB.set(null);
       aiDB.set(null);
