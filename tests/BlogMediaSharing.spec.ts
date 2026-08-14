@@ -1,15 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { waitForLoadingOverlayToSettle } from './pageLoad';
+import { closeSidebarOverlayIfPresent, waitForLoadingOverlayToSettle } from './pageLoad';
 
 const RELAY_WS_ORIGIN = 'ws://localhost:19092';
-
-async function closeSidebarOverlayIfPresent(page) {
-  const overlay = page.locator('[aria-label="close_sidebar"]').first();
-  if (await overlay.count() === 0) return;
-  if (await overlay.isVisible().catch(() => false)) {
-    await overlay.click({ force: true, timeout: 3000 }).catch(() => {});
-  }
-}
 
 test.describe('Blog media sharing between Alice and Bob', () => {
   test('Alice uploads image to a post and Bob sees it', async ({ browser }) => {
@@ -120,6 +112,7 @@ test.describe('Blog media sharing between Alice and Bob', () => {
 
     const bobPostTitle = pageBob.getByTestId('post-item-title').filter({ hasText: 'Alice image post' });
     await expect(bobPostTitle).toBeVisible({ timeout: 120000 });
+    await closeSidebarOverlayIfPresent(pageBob);
     await bobPostTitle.first().click();
 
     await expect(pageBob.getByTestId('blog-post').locator('img[alt="alice-photo.png"]')).toBeVisible({ timeout: 120000 });
