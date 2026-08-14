@@ -981,11 +981,39 @@ https://svelte.dev/e/store_invalid_scoped_subscription -->
     touchEndX = 0;
   }
 
-  // Add mouse-related functions
-  function handleMouseEnter() {
-    if (!sidebarVisible) {
-      sidebarVisible = true;
+  // The trigger strip is 24px wide and spans the full height of the window edge,
+  // and it used to open the sidebar the instant a pointer touched it. Moving the
+  // mouse towards the back button, across a scrollbar, or simply across the
+  // window was enough to drop a full-screen backdrop over the content — no click,
+  // no intent. Require the pointer to rest on the strip briefly instead, and
+  // cancel as soon as it leaves. Click, touch and keyboard focus stay immediate,
+  // because those are already deliberate.
+  const SIDEBAR_HOVER_INTENT_MS = 300;
+  let sidebarHoverTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancelSidebarHoverIntent() {
+    if (sidebarHoverTimer !== null) {
+      clearTimeout(sidebarHoverTimer);
+      sidebarHoverTimer = null;
     }
+  }
+
+  function handleMouseEnter() {
+    if (sidebarVisible || sidebarHoverTimer !== null) return;
+    sidebarHoverTimer = setTimeout(() => {
+      sidebarHoverTimer = null;
+      sidebarVisible = true;
+    }, SIDEBAR_HOVER_INTENT_MS);
+  }
+
+  function openSidebarNow() {
+    cancelSidebarHoverIntent();
+    sidebarVisible = true;
+  }
+
+  function closeSidebarNow() {
+    cancelSidebarHoverIntent();
+    sidebarVisible = false;
   }
 
   // Function to copy the settingsDB address to clipboard
@@ -1068,13 +1096,19 @@ https://svelte.dev/e/store_invalid_scoped_subscription -->
         style="background-color: rgba(0, 0, 0, 0.4); backdrop-filter: blur(2px);"
         role="button"
         tabindex="0"
-        onclick={() => sidebarVisible = false}
-        ontouchend={(e) => {sidebarVisible = false; e.stopPropagation()}}
+        onclick={closeSidebarNow}
+        ontouchend={(e) => {closeSidebarNow(); e.stopPropagation()}}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            sidebarVisible = false;
+            closeSidebarNow();
           }
+        }}
+        onoutrostart={(e) => {
+          // `transition:fade` only animates opacity, so the backdrop keeps
+          // swallowing clicks for the whole fade-out. Anything the user clicks
+          // in that window is lost.
+          (e.currentTarget as HTMLElement).style.pointerEvents = 'none';
         }}
         transition:fade
         aria-label={$_('close_sidebar')}
@@ -1123,16 +1157,18 @@ https://svelte.dev/e/store_invalid_scoped_subscription -->
         style="{sidebarTriggerPosition}: 0;"
         role="button"
         tabindex="0"
-        onclick={() => sidebarVisible = true}
-        ontouchend={(e) => {sidebarVisible = true; e.stopPropagation()}}
+        onclick={openSidebarNow}
+        ontouchend={(e) => {openSidebarNow(); e.stopPropagation()}}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            sidebarVisible = true;
+            openSidebarNow();
           }
         }}
         onmouseenter={handleMouseEnter}
-        onfocus={handleMouseEnter}
+        onmouseleave={cancelSidebarHoverIntent}
+        onfocus={openSidebarNow}
+        onblur={cancelSidebarHoverIntent}
         aria-label={$_('show_sidebar')}>
       </div>
     {/if}
