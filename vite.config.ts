@@ -111,7 +111,11 @@ export default defineConfig(({ command, mode }) => {
             '**/assets/cytoscape-*.js',
             '**/assets/katex-*.js',
           ],
-          additionalManifestEntries: [{ url: 'index.html', revision: null }],
+          // `index.html` is already precached by the `html` glob above, with a
+          // content revision. Adding it again with `revision: null` gave workbox
+          // two entries for one URL, and precacheAndRoute() threw
+          // add-to-cache-list-conflicting-entries before it registered a single
+          // route — which took the whole service worker down with it.
           runtimeCaching: [
             {
               // Cache navigation for instant offline loading, but don't interfere with IPFS/OrbitDB URLs.

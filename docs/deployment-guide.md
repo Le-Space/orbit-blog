@@ -35,7 +35,10 @@ Optional repository variable:
 - `ALEPH_SITE_DOMAIN`
   Defaults to `blog.le-space.de` when unset.
 - `ORBIT_BLOG_INITIAL_ADDRESS`
-  Defaults to `/orbitdb/zdpuAyR7FpgoqyU2BgUeRZTFGHSZZCno5Rdz3ZLNXGzXh78uS` when unset.
+  Unset by default. The deploy then writes an empty
+  `.well-known/orbit-blog.json`, and a visitor who opens the bare domain starts
+  with their own local blog instead of a preselected database. Set it to an
+  `/orbitdb/...` address to pin the deployed site to one blog.
 
 Trigger model:
 

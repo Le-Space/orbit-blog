@@ -86,9 +86,12 @@ jobs:
         env:
           ORBIT_BLOG_INITIAL_ADDRESS: ${{ vars.ORBIT_BLOG_INITIAL_ADDRESS }}
         run: |
-          initial_address="${ORBIT_BLOG_INITIAL_ADDRESS:-/orbitdb/zdpuAyR7FpgoqyU2BgUeRZTFGHSZZCno5Rdz3ZLNXGzXh78uS}"
+          # No baked-in default blog address. A visitor who opens the bare
+          # domain gets their own local blog; only an explicitly configured
+          # ORBIT_BLOG_INITIAL_ADDRESS pins the site to one OrbitDB database.
           mkdir -p public/.well-known
-          ORBIT_BLOG_INITIAL_ADDRESS="$initial_address" node --input-type=module -e "import { mkdirSync, writeFileSync } from 'node:fs'; const initialAddress = process.env.ORBIT_BLOG_INITIAL_ADDRESS; const body = JSON.stringify({ initialAddress }, null, 2) + '\n'; mkdirSync('public/.well-known', { recursive: true }); writeFileSync('public/.well-known/orbit-blog.json', body);"
+          node --input-type=module -e "import { mkdirSync, writeFileSync } from 'node:fs'; const initialAddress = (process.env.ORBIT_BLOG_INITIAL_ADDRESS || '').trim(); const body = JSON.stringify(initialAddress ? { initialAddress } : {}, null, 2) + '\n'; mkdirSync('public/.well-known', { recursive: true }); writeFileSync('public/.well-known/orbit-blog.json', body);"
+          cat public/.well-known/orbit-blog.json
 
       - name: Build app
         env:

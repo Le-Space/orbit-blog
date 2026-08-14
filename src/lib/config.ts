@@ -98,16 +98,56 @@ function dedupeMultiaddrs(addrs: string[]): string[] {
     return [...new Set(addrs.map(addr => addr.trim()).filter(Boolean))]
 }
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
+const HOST_PROTOCOLS = new Set(['ip4', 'ip6', 'dns', 'dns4', 'dns6', 'dnsaddr'])
+
+function multiaddrHost(addr: string): string {
+    const parts = addr.toLowerCase().split('/').filter(Boolean)
+    const index = parts.findIndex(part => HOST_PROTOCOLS.has(part))
+    return index >= 0 ? parts[index + 1] || '' : ''
+}
+
+/**
+ * Whether a WebSocket multiaddr terminates TLS, i.e. maps to `wss://` rather
+ * than `ws://`. `/wss` is the legacy spelling of `/tls/ws`, and a relay behind
+ * Caddy announces `/tls/sni/<host>/ws`. A bare `/ws` is plaintext.
+ */
+function isSecureWebSocketMultiaddr(addr: string): boolean {
+    const parts = addr.toLowerCase().split('/').filter(Boolean)
+    if (parts.includes('wss')) return true
+    const wsIndex = parts.indexOf('ws')
+    return wsIndex > 0 && parts.lastIndexOf('tls', wsIndex) >= 0
+}
+
+/**
+ * A page served over https cannot open a plaintext `ws://` socket: the browser
+ * blocks the dial as mixed content before libp2p ever sees it. Relays legitimately
+ * announce the plaintext port they serve, so the registry contains such addresses;
+ * they just have to be dropped here rather than dialled and logged as errors.
+ */
+function isMixedContentBlocked(addr: string): boolean {
+    if (typeof window === 'undefined' || window.location?.protocol !== 'https:') return false
+    const parts = addr.toLowerCase().split('/').filter(Boolean)
+    if (!parts.includes('ws') && !parts.includes('wss')) return false
+    if (isSecureWebSocketMultiaddr(addr)) return false
+    const host = multiaddrHost(addr)
+    return !(LOOPBACK_HOSTS.has(host) || host.endsWith('.localhost'))
+}
+
 function createBootstrapConfig(addrs: string[]) {
     return {
         list: dedupeMultiaddrs(addrs).filter(addr => {
         try {
             multiaddr(addr);
-            return true;
         } catch (e) {
             log.warn(`Invalid multiaddr filtered out: ${addr}`);
             return false;
         }
+        if (isMixedContentBlocked(addr)) {
+            log.warn(`Plaintext ws relay filtered out on an https origin: ${addr}`);
+            return false;
+        }
+        return true;
         }),
         // Browser nodes need a durable relay connection. libp2p 3's bootstrap
         // tag otherwise expires after two minutes, and only keep-alive-prefixed

@@ -1,6 +1,6 @@
 import { test, expect, chromium } from '@playwright/test';
-import { getRelayMetricsOriginsRaw, getRelayTargetLabel } from './relayTestEnv';
-import { waitForPeerCount } from './peerConnectivity';
+import { getRelayMetricsOriginsRaw, getRelaySeedPeerIds, getRelayTargetLabel } from './relayTestEnv';
+import { waitForPeerCount, waitForRelayPeerConnection } from './peerConnectivity';
 import {
     fetchRelayDatabaseListingAny,
     getRelayMetricsOrigins,
@@ -327,6 +327,24 @@ test.describe('Blog Sharing between Alice and Bob', () => {
     test('Alice edits a post and Bob sees the update while viewing', async () => {
         await closeSidebarOverlayIfPresent(pageAlice);
         await closeSidebarOverlayIfPresent(pageBob);
+
+        // Both peers must hold the relay connection before the edit is made.
+        // This suite asserts connectivity only once, early, and only for Alice,
+        // and a page can lose the relay between tests. When that happens the
+        // edit is published into an empty mesh, and the assertion below spends
+        // 60s waiting for a message that was never broadcast:
+        //
+        //   [alice] libp2p:discovery:pubsub skipping broadcasting our peer data
+        //           because there are no peers present
+        //
+        // Waiting here turns that race into a precondition, and a genuinely
+        // unreachable relay now fails as "wait for relay peer connection"
+        // instead of an unexplained replication timeout.
+        const relayPeerIds = getRelaySeedPeerIds();
+        await Promise.all([
+            waitForRelayPeerConnection(pageAlice, relayPeerIds, 120000),
+            waitForRelayPeerConnection(pageBob, relayPeerIds, 120000),
+        ]);
 
         const targetTitle = "The Birth of a Musical Genius";
         const updatedContent = `Johann Sebastian Bach was born in Eisenach, Germany in 1685... (edited ${Date.now()})`;

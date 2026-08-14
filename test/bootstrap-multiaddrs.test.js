@@ -41,6 +41,20 @@ describe('deployment bootstrap multiaddresses', () => {
     ).to.deep.equal([secureAddress, websocketAddress]);
   });
 
+  it('drops plaintext ws relays that an https page cannot dial', () => {
+    const plainPublic = `/ip4/93.186.192.85/tcp/24057/ws/p2p/${peerB}`;
+    const plainPublicV6 = `/ip6/2001:db8::10/tcp/9092/ws/p2p/${peerB}`;
+    const sniAddress = `/ip4/93.186.192.85/tcp/443/tls/sni/relay.example/ws/p2p/${peerA}`;
+    const wssAddress = `/dns4/relay.example/tcp/443/wss/p2p/${peerA}`;
+
+    expect(
+      selectValidBrowserBootstrapMultiaddrs([plainPublic, plainPublicV6, secureAddress]),
+    ).to.deep.equal([secureAddress]);
+
+    expect(selectValidBrowserBootstrapMultiaddrs([sniAddress])).to.deep.equal([sniAddress]);
+    expect(selectValidBrowserBootstrapMultiaddrs([wssAddress])).to.deep.equal([wssAddress]);
+  });
+
   it('uses explicit override, Aleph discovery, then fallback precedence', () => {
     expect(
       resolveBootstrapMultiaddrs({
