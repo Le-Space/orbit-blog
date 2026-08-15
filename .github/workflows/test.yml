@@ -58,6 +58,45 @@ jobs:
        sleep 10
        pnpm exec mocha "test/**/*.test.js"
 
+  # Everything else here runs against the Vite dev server, which serves modules
+  # unbundled — so nothing in this workflow could see a failure introduced by
+  # Rollup chunking. One reached production that way: the Node shims landed in
+  # the mermaid chunk, the p2p chunk read process$1 before that chunk had
+  # initialised, and the site loaded blank while build, unit tests, type check
+  # and all eleven e2e specs stayed green. This job opens the built bundle in a
+  # real browser and fails on uncaught errors or an app that never mounts.
+  smoke:
+    name: production build smoke test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v6
+      with:
+        version: 10.33.0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '22'
+        cache: 'pnpm'
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Install Playwright Browsers
+      run: pnpm exec playwright install --with-deps chromium
+
+    - name: Build production bundle
+      env:
+        VITE_MODE: production
+        VITE_P2P_PUPSUB: todo._peer-discovery._p2p._pubsub
+      run: pnpm run build
+
+    - name: Load the built bundle in a browser
+      run: node scripts/smoke-production-build.mjs
+
   # The spec list is read from disk rather than hardcoded, so a new spec file is
   # picked up by the matrix without anyone remembering to add it here. This
   # mirrors what scripts/run-e2e-specs.mjs does with readdirSync.
