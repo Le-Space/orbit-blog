@@ -136,6 +136,8 @@ test.describe('Post creation replicates to relay database sync history', () => {
       metricsOrigins,
       createdPostInfo!.postsDbAddress,
       'postsDB',
+      undefined,
+      page,
     );
 
     expect(Date.parse(relayLastSyncedAt ?? '')).toBeGreaterThanOrEqual(

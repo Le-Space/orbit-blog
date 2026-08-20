@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { getRelayTargetLabel } from './relayTestEnv';
 
 type RelayDatabaseRow = {
@@ -230,6 +231,65 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * The browser's side of the same question, read out of the live libp2p node.
+ *
+ * `waitForRelayPeerConnection` only checks that a connection to the relay's peer
+ * id is `open`. A limited connection — one established through a circuit relay
+ * rather than directly — satisfies that and is not the same thing: protocols have
+ * to opt in to run over it. So report `limited` per connection, and report the
+ * transport in the multiaddr while we are here.
+ *
+ * The gossipsub view matters just as much. If the browser is not subscribed to
+ * the database's topic there is nothing for the relay to discover; if it is
+ * subscribed but does not list the relay among that topic's subscribers, the two
+ * are connected without sharing a mesh.
+ */
+async function readBrowserRelayView(page: Page, dbAddress: string): Promise<string> {
+  const view = await page
+    .evaluate((topic) => {
+      const node = (window as typeof window & { libp2p?: any }).libp2p;
+      if (!node?.getConnections) return { error: 'window.libp2p is not available' };
+
+      const connections = (node.getConnections() ?? []).map((connection: any) => ({
+        peer: connection?.remotePeer?.toString?.() ?? '?',
+        addr: connection?.remoteAddr?.toString?.() ?? '?',
+        status: connection?.status ?? '?',
+        // libp2p marks circuit-relay connections with `limits`; older versions
+        // used `transient`. Check both so this does not silently read false.
+        limited: Boolean(connection?.limits) || connection?.transient === true,
+      }));
+
+      const pubsub = node.services?.pubsub;
+      let topics: string[] = [];
+      let subscribers: string[] = [];
+      try {
+        topics = (pubsub?.getTopics?.() ?? []).map(String);
+        subscribers = (pubsub?.getSubscribers?.(topic) ?? []).map(String);
+      } catch (error) {
+        return { connections, topics, subscribers, error: String(error) };
+      }
+
+      return { connections, topics, subscribers, error: '' };
+    }, dbAddress)
+    .catch((error) => ({ error: `page.evaluate failed: ${String(error)}` }) as any);
+
+  if (view.error && !view.connections) return `    ${view.error}`;
+
+  const lines = (view.connections ?? []).map(
+    (c: any) => `    ${c.limited ? 'LIMITED' : 'direct '}  ${c.status}  ${c.peer}  ${c.addr}`,
+  );
+  if (lines.length === 0) lines.push('    (no open connections)');
+
+  const orbitTopics = (view.topics ?? []).filter((t: string) => t.startsWith('/orbitdb/'));
+  lines.push(`    gossipsub topics: ${view.topics?.length ?? 0} total, ${orbitTopics.length} /orbitdb/`);
+  lines.push(`    subscribed to this database's topic: ${orbitTopics.includes(dbAddress) ? 'yes' : 'NO'}`);
+  lines.push(`    peers subscribed to it, as the browser sees them: ${(view.subscribers ?? []).join(', ') || '(none)'}`);
+  if (view.error) lines.push(`    ${view.error}`);
+
+  return lines.join('\n');
+}
+
+/**
  * The relay's own view of itself, sampled either side of a wait.
  *
  * `syncOperations` is the interesting one: the counter is incremented at the top
@@ -279,6 +339,32 @@ async function fetchRelaySnapshot(origin: string): Promise<RelaySnapshot> {
 
 function fetchRelaySnapshots(origins: string[]): Promise<RelaySnapshot[]> {
   return Promise.all(origins.map(fetchRelaySnapshot));
+}
+
+/**
+ * Say what the counters mean, but only where they actually say it. A hint that
+ * prints whether or not it applies is worse than no hint — it reads as a finding.
+ */
+function readSnapshotVerdict(before: RelaySnapshot[], after: RelaySnapshot[]): string[] {
+  const verdicts: string[] = [];
+
+  const startedNoSync = after.some((now) => {
+    const then = before.find((candidate) => candidate.origin === now.origin);
+    return (
+      typeof now.syncOperations === 'number' &&
+      typeof then?.syncOperations === 'number' &&
+      now.syncOperations === then.syncOperations
+    );
+  });
+  if (startedNoSync) {
+    verdicts.push('    -> syncOperations did not move: the relay never started a sync, so discovery never fired');
+  }
+
+  if (after.some((now) => now.connections === 0)) {
+    verdicts.push('    -> connections is 0: the relay does not see the browser at all');
+  }
+
+  return verdicts;
 }
 
 function formatSnapshotDelta(before: RelaySnapshot[], after: RelaySnapshot[]): string {
@@ -332,6 +418,7 @@ export async function waitForRelayDatabaseListing(
   dbAddressRaw: string,
   label: string,
   timeoutMs: number = DEFAULT_LISTING_TIMEOUT_MS,
+  page?: Page,
 ): Promise<string> {
   const dbAddress = normalizeOrbitDbAddress(dbAddressRaw);
   const startedAt = Date.now();
@@ -355,6 +442,7 @@ export async function waitForRelayDatabaseListing(
   }
 
   const snapshotAfter = await fetchRelaySnapshots(metricsOrigins);
+  const browserView = page ? await readBrowserRelayView(page, dbAddress) : '    (no page passed)';
   const diagnosticSync = await requestRelayDatabaseSyncAny(metricsOrigins, dbAddress);
 
   throw new Error(
@@ -364,14 +452,16 @@ export async function waitForRelayDatabaseListing(
       `  final probe: ${lastListing.probe}`,
       '  GET /pinning/databases (last poll):',
       formatListingAttempts(lastListing.attempts),
+      "  the browser's libp2p node, at the moment the wait failed:",
+      browserView,
       '  relay state, sampled before and after the wait:',
       formatSnapshotDelta(snapshotBefore, snapshotAfter),
-      '    syncOperations unchanged -> the relay never started a sync; discovery did not fire',
-      '    connections 0            -> the relay does not see the browser at all',
+      ...readSnapshotVerdict(snapshotBefore, snapshotAfter),
       '  POST /pinning/sync (diagnostic only, sent after the wait failed):',
       formatSyncAttempts(diagnosticSync),
-      '    ok   -> the sync works; gossipsub discovery never reached the relay',
-      '    FAIL -> the relay cannot sync this database at all',
+      diagnosticSync.some((attempt) => attempt.ok)
+        ? '    -> the sync works when asked over HTTP; gossipsub discovery never reached the relay'
+        : '    -> the nudge failed too; the relay cannot sync this database at all',
     ].join('\n'),
   );
 }

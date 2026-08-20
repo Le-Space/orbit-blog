@@ -130,8 +130,8 @@ async function readCurrentDbAddresses(page: Page) {
   });
 }
 
-async function waitForRelayListing(metricsOrigins: string[], dbAddress: string, label: string) {
-  await waitForRelayDatabaseListing(metricsOrigins, dbAddress, label);
+async function waitForRelayListing(page: Page, metricsOrigins: string[], dbAddress: string, label: string) {
+  await waitForRelayDatabaseListing(metricsOrigins, dbAddress, label, undefined, page);
 }
 
 async function expectDbManagerLedGreen(page: Page, key: keyof CurrentDbAddresses) {
@@ -188,10 +188,10 @@ test.describe('DB Manager replication LEDs', () => {
       )
       .toBe('ready');
 
-    await waitForRelayListing(metricsOrigins, addresses!.settings, 'settingsDB');
-    await waitForRelayListing(metricsOrigins, addresses!.posts, 'postsDB');
-    await waitForRelayListing(metricsOrigins, addresses!.comments, 'commentsDB');
-    await waitForRelayListing(metricsOrigins, addresses!.media, 'mediaDB');
+    await waitForRelayListing(page, metricsOrigins, addresses!.settings, 'settingsDB');
+    await waitForRelayListing(page, metricsOrigins, addresses!.posts, 'postsDB');
+    await waitForRelayListing(page, metricsOrigins, addresses!.comments, 'commentsDB');
+    await waitForRelayListing(page, metricsOrigins, addresses!.media, 'mediaDB');
 
     await page.getByTestId('menu-button').click();
     await page.getByTestId('blogs-header').click();

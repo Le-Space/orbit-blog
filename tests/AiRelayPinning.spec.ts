@@ -116,6 +116,8 @@ test.describe('AI image upload replicates to relay pinning service', () => {
       metricsOrigins,
       uploadedInfo!.mediaDbAddress,
       'mediaDB',
+      undefined,
+      page,
     );
 
     expect(Date.parse(relayLastSyncedAt ?? '')).toBeGreaterThanOrEqual(
