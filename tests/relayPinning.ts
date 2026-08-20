@@ -52,8 +52,6 @@ const DEFAULT_LISTING_TIMEOUT_MS = 120_000;
 const SYNC_TIMEOUT_MS = Number(process.env.RELAY_PINNING_SYNC_TIMEOUT_MS || 30_000);
 const LISTING_TIMEOUT_MS = Number(process.env.RELAY_PINNING_LISTING_TIMEOUT_MS || 15_000);
 
-// How long to keep polling the listing before asking the relay to sync again.
-const SYNC_RETRY_AFTER_MS = Number(process.env.RELAY_PINNING_SYNC_RETRY_AFTER_MS || 20_000);
 const POLL_INTERVAL_MS = 2_000;
 
 function splitCsv(raw: string): string[] {
@@ -232,20 +230,30 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Ask the relay to sync `dbAddress`, then wait for it to report a `lastSyncedAt`.
+ * Wait for the relay to list `dbAddress` with a `lastSyncedAt`, over p2p only.
  *
- * `POST /pinning/sync` is what makes the relay aware of a database — until it
- * completes, `GET /pinning/databases` answers 404 and no amount of polling will
- * change that. The previous version fired the sync exactly once and then polled
- * for two minutes, so a sync that failed left the poll waiting on something that
- * was never coming. That is how the daily `WebRTC (remote)` run fails: the sync
- * request for `settingsDB` never returns, and the listing 404s for the full
- * timeout.
+ * The relay is supposed to find a database by itself. `orbitdb-relay` subscribes
+ * to gossipsub and, for every `/orbitdb/…` topic a peer subscribes to, remembers
+ * the peer and queues a sync:
  *
- * `settingsDB` is the first database this is called for after the UI flow, and
- * the relay has had the least time to replicate it. `postsDB` and `mediaDB` are
- * asked for later in the same run, against the same relay, and pass. So retry
- * the sync across the wait instead of betting the whole window on the first one.
+ *     pubsub.addEventListener("subscription-change", subscriptionChangeHandler)
+ *     …
+ *     databaseService.rememberDatabasePeer(subscription.topic, event.detail.peerId)
+ *     scheduleOrbitdbTopicSync(subscription.topic)
+ *
+ * `POST /pinning/sync` calls the same `syncAllOrbitDBRecordsWithResult`; it is a
+ * manual trigger for the one mechanism, not a second one. These specs used to
+ * send it before polling, which meant a green run proved only that the HTTP nudge
+ * worked — whether the browser's topic subscription ever reached the relay went
+ * untested, and that is the part the product depends on.
+ *
+ * So: do not nudge. Poll, and let the relay do its job.
+ *
+ * On failure only, send one `/pinning/sync` to split the two explanations apart:
+ * if the nudge then succeeds, the sync works and gossipsub discovery is what
+ * failed; if the nudge also times out, the sync itself is broken for this
+ * database. Neither outcome changes the verdict — the wait already failed — but
+ * it decides where to look.
  *
  * Returns the `lastSyncedAt` the relay reported.
  */
@@ -256,43 +264,38 @@ export async function waitForRelayDatabaseListing(
   timeoutMs: number = DEFAULT_LISTING_TIMEOUT_MS,
 ): Promise<string> {
   const dbAddress = normalizeOrbitDbAddress(dbAddressRaw);
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
 
-  const syncAttempts: RelaySyncAttempt[] = [];
   let lastListing: RelayDatabaseListing = { probe: 'unknown', row: null, attempts: [] };
-  let round = 0;
 
   while (Date.now() < deadline) {
-    round += 1;
-    const attempts = await requestRelayDatabaseSyncAny(metricsOrigins, dbAddress);
-    syncAttempts.push(...attempts);
-
-    // Print this on green runs too. `receivedUpdate=false entryCount=0` means the
-    // relay answered without replicating anything, and the assertion below still
-    // passes — so a run that only reports pass/fail hides whether the pinning
-    // service did any work.
-    for (const attempt of attempts) {
-      console.log(`[pinning] sync ${label} ${dbAddress} via ${attempt.origin} (round ${round}): ${attempt.detail}`);
+    lastListing = await fetchRelayDatabaseListingAny(metricsOrigins, dbAddress);
+    const lastSyncedAt = lastListing.row?.lastSyncedAt ?? '';
+    if (lastSyncedAt) {
+      // Print this on green runs too, so the log shows how long the relay took
+      // to find each database on its own rather than only pass/fail.
+      console.log(
+        `[pinning] ${label} ${dbAddress} listed by ${getRelayTargetLabel()} after ${Date.now() - startedAt}ms (p2p, no HTTP nudge)`,
+      );
+      return lastSyncedAt;
     }
-
-    const sliceEnd = Math.min(Date.now() + SYNC_RETRY_AFTER_MS, deadline);
-    while (Date.now() < sliceEnd) {
-      lastListing = await fetchRelayDatabaseListingAny(metricsOrigins, dbAddress);
-      const lastSyncedAt = lastListing.row?.lastSyncedAt ?? '';
-      if (lastSyncedAt) return lastSyncedAt;
-      await sleep(POLL_INTERVAL_MS);
-    }
+    await sleep(POLL_INTERVAL_MS);
   }
+
+  const diagnosticSync = await requestRelayDatabaseSyncAny(metricsOrigins, dbAddress);
 
   throw new Error(
     [
-      `${getRelayTargetLabel()} never reported lastSyncedAt for ${label} within ${timeoutMs}ms.`,
+      `${getRelayTargetLabel()} never listed ${label} within ${timeoutMs}ms of p2p discovery.`,
       `  address: ${dbAddress}`,
       `  final probe: ${lastListing.probe}`,
-      `  POST /pinning/sync (${round} round(s)):`,
-      formatSyncAttempts(syncAttempts),
       '  GET /pinning/databases (last poll):',
       formatListingAttempts(lastListing.attempts),
+      '  POST /pinning/sync (diagnostic only, sent after the wait failed):',
+      formatSyncAttempts(diagnosticSync),
+      '    ok   -> the sync works; gossipsub discovery never reached the relay',
+      '    FAIL -> the relay cannot sync this database at all',
     ].join('\n'),
   );
 }

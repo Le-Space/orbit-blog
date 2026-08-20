@@ -79,6 +79,15 @@ async function expectPostsDbReplicatedToRelay(page, title: string, timeoutMs = 1
 
     expect(createdPostInfo?.postsDbAddress).toMatch(/^\/orbitdb\/[a-zA-Z0-9]+$/);
 
+    // The other pinning specs dropped this nudge: the relay finds their databases
+    // over gossipsub by itself, in single-digit milliseconds. This one cannot yet.
+    // Removing the line here makes the first test fail against the *local* relay —
+    // /pinning/databases 404s for the full 120s, so `Received: 0` — while
+    // PostsRelayReplication's postsDB is listed after ~2s in the same setup.
+    //
+    // That difference is not understood, so the nudge stays until it is. Note what
+    // it costs: with it, this assertion cannot distinguish "the relay replicated
+    // Alice's posts" from "the relay answered an HTTP request".
     await requestRelayDatabaseSyncAny(metricsOrigins, createdPostInfo!.postsDbAddress);
 
     await expect
