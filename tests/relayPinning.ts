@@ -1,4 +1,3 @@
-import { expect } from '@playwright/test';
 import { getRelayTargetLabel } from './relayTestEnv';
 
 type RelayDatabaseRow = {
@@ -50,8 +49,12 @@ const DEFAULT_LISTING_TIMEOUT_MS = 120_000;
 // fetch is unbounded, and a relay that accepts the connection and then goes quiet
 // would hang the spec until Playwright's own test timeout, reported as a timeout
 // on whatever line happened to be running.
-const SYNC_TIMEOUT_MS = Number(process.env.RELAY_PINNING_SYNC_TIMEOUT_MS || 45_000);
+const SYNC_TIMEOUT_MS = Number(process.env.RELAY_PINNING_SYNC_TIMEOUT_MS || 30_000);
 const LISTING_TIMEOUT_MS = Number(process.env.RELAY_PINNING_LISTING_TIMEOUT_MS || 15_000);
+
+// How long to keep polling the listing before asking the relay to sync again.
+const SYNC_RETRY_AFTER_MS = Number(process.env.RELAY_PINNING_SYNC_RETRY_AFTER_MS || 20_000);
+const POLL_INTERVAL_MS = 2_000;
 
 function splitCsv(raw: string): string[] {
   return [...new Set(raw.split(',').map((part) => part.trim()).filter(Boolean))];
@@ -224,16 +227,25 @@ function formatListingAttempts(attempts: RelayListingAttempt[]): string {
     .join('\n');
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Ask the relay to sync `dbAddress`, then wait for it to report a `lastSyncedAt`.
  *
- * The inline `expect.poll` this replaces threw away the two facts that explain a
- * timeout: whether `/pinning/sync` was accepted at all, and whether the database
- * came back listed-but-never-synced or not listed at all. The daily
- * `WebRTC (remote)` run has been failing on `settingsDB` — with `postsDB` and
- * `mediaDB` green against the same relay in the same run — and the message said
- * only "wait for <relay> to list settingsDB", which restates the question instead
- * of answering it. Keep the last observed state and put it in the error.
+ * `POST /pinning/sync` is what makes the relay aware of a database — until it
+ * completes, `GET /pinning/databases` answers 404 and no amount of polling will
+ * change that. The previous version fired the sync exactly once and then polled
+ * for two minutes, so a sync that failed left the poll waiting on something that
+ * was never coming. That is how the daily `WebRTC (remote)` run fails: the sync
+ * request for `settingsDB` never returns, and the listing 404s for the full
+ * timeout.
+ *
+ * `settingsDB` is the first database this is called for after the UI flow, and
+ * the relay has had the least time to replicate it. `postsDB` and `mediaDB` are
+ * asked for later in the same run, against the same relay, and pass. So retry
+ * the sync across the wait instead of betting the whole window on the first one.
  *
  * Returns the `lastSyncedAt` the relay reported.
  */
@@ -244,46 +256,43 @@ export async function waitForRelayDatabaseListing(
   timeoutMs: number = DEFAULT_LISTING_TIMEOUT_MS,
 ): Promise<string> {
   const dbAddress = normalizeOrbitDbAddress(dbAddressRaw);
-  const syncAttempts = await requestRelayDatabaseSyncAny(metricsOrigins, dbAddress);
+  const deadline = Date.now() + timeoutMs;
 
-  // Print this on green runs too. `receivedUpdate=false entryCount=0` means the
-  // relay answered without replicating anything, and the assertion below still
-  // passes — so a run that only reports pass/fail hides whether the pinning
-  // service did any work.
-  for (const attempt of syncAttempts) {
-    console.log(`[pinning] sync ${label} ${dbAddress} via ${attempt.origin}: ${attempt.detail}`);
-  }
-
+  const syncAttempts: RelaySyncAttempt[] = [];
   let lastListing: RelayDatabaseListing = { probe: 'unknown', row: null, attempts: [] };
+  let round = 0;
 
-  try {
-    await expect
-      .poll(
-        async () => {
-          lastListing = await fetchRelayDatabaseListingAny(metricsOrigins, dbAddress);
-          return lastListing.row?.lastSyncedAt ?? '';
-        },
-        {
-          timeout: timeoutMs,
-          message: `wait for ${getRelayTargetLabel()} to list ${label} in /pinning/databases`,
-        },
-      )
-      .not.toBe('');
-  } catch (error) {
-    throw new Error(
-      [
-        `${getRelayTargetLabel()} never reported lastSyncedAt for ${label} within ${timeoutMs}ms.`,
-        `  address: ${dbAddress}`,
-        `  final probe: ${lastListing.probe}`,
-        '  POST /pinning/sync:',
-        formatSyncAttempts(syncAttempts),
-        '  GET /pinning/databases (last poll):',
-        formatListingAttempts(lastListing.attempts),
-        '',
-        describeError(error),
-      ].join('\n'),
-    );
+  while (Date.now() < deadline) {
+    round += 1;
+    const attempts = await requestRelayDatabaseSyncAny(metricsOrigins, dbAddress);
+    syncAttempts.push(...attempts);
+
+    // Print this on green runs too. `receivedUpdate=false entryCount=0` means the
+    // relay answered without replicating anything, and the assertion below still
+    // passes — so a run that only reports pass/fail hides whether the pinning
+    // service did any work.
+    for (const attempt of attempts) {
+      console.log(`[pinning] sync ${label} ${dbAddress} via ${attempt.origin} (round ${round}): ${attempt.detail}`);
+    }
+
+    const sliceEnd = Math.min(Date.now() + SYNC_RETRY_AFTER_MS, deadline);
+    while (Date.now() < sliceEnd) {
+      lastListing = await fetchRelayDatabaseListingAny(metricsOrigins, dbAddress);
+      const lastSyncedAt = lastListing.row?.lastSyncedAt ?? '';
+      if (lastSyncedAt) return lastSyncedAt;
+      await sleep(POLL_INTERVAL_MS);
+    }
   }
 
-  return lastListing.row?.lastSyncedAt ?? '';
+  throw new Error(
+    [
+      `${getRelayTargetLabel()} never reported lastSyncedAt for ${label} within ${timeoutMs}ms.`,
+      `  address: ${dbAddress}`,
+      `  final probe: ${lastListing.probe}`,
+      `  POST /pinning/sync (${round} round(s)):`,
+      formatSyncAttempts(syncAttempts),
+      '  GET /pinning/databases (last poll):',
+      formatListingAttempts(lastListing.attempts),
+    ].join('\n'),
+  );
 }
