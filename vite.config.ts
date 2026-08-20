@@ -276,6 +276,33 @@ export default defineConfig(({ command, mode }) => {
           manualChunks(id) {
             if (!id.includes('node_modules')) return undefined
 
+            // The Node shims must land in a chunk of their own, and this rule
+            // has to come first.
+            //
+            // They match none of the feature rules below, so Rollup used to
+            // place them wherever it liked — which after a dependency bump was
+            // inside `mermaid`. The p2p chunk then opened with
+            //
+            //     import { p as process$1 } from './mermaid-<hash>.js'
+            //
+            // and read process$1 before the mermaid chunk had initialised it:
+            // "Uncaught ReferenceError: Cannot access 'process$1' before
+            // initialization", which took the whole p2p stack down on load. The
+            // owning chunk is decided by the module graph, so any dependency
+            // change can move it again and the failure looks unrelated to its
+            // cause.
+            //
+            // A dedicated chunk is a leaf: everything imports it, it imports
+            // nothing back, so there is no initialisation cycle to lose.
+            // Only true leaves belong here. `events`, `util` and
+            // `readable-stream` have dependencies of their own and pulling them
+            // in produces "Circular chunk: p2p -> node-polyfills -> p2p", which
+            // trades the TDZ for a different initialisation failure.
+            if (
+              id.includes('vite-plugin-node-polyfills/shims') ||
+              /node_modules\/(process|buffer|safe-buffer)\//.test(id)
+            ) return 'node-polyfills'
+
             if (
               id.includes('/@orbitdb/') ||
               id.includes('/orbitdb/') ||
