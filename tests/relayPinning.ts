@@ -257,32 +257,45 @@ async function readBrowserRelayView(page: Page, dbAddress: string): Promise<stri
         // libp2p marks circuit-relay connections with `limits`; older versions
         // used `transient`. Check both so this does not silently read false.
         limited: Boolean(connection?.limits) || connection?.transient === true,
+        // Which protocols actually have a stream open on this connection. A
+        // healthy connection without a /meshsub/ stream means gossipsub never
+        // established with that peer, so no subscription of ours can reach it.
+        protocols: [
+          ...new Set((connection?.streams ?? []).map((stream: any) => String(stream?.protocol ?? '?'))),
+        ].sort(),
       }));
 
       const pubsub = node.services?.pubsub;
       let topics: string[] = [];
       let subscribers: string[] = [];
+      let pubsubPeers: string[] = [];
       try {
         topics = (pubsub?.getTopics?.() ?? []).map(String);
         subscribers = (pubsub?.getSubscribers?.(topic) ?? []).map(String);
+        pubsubPeers = (pubsub?.getPeers?.() ?? []).map(String);
       } catch (error) {
-        return { connections, topics, subscribers, error: String(error) };
+        return { connections, topics, subscribers, pubsubPeers, error: String(error) };
       }
 
-      return { connections, topics, subscribers, error: '' };
+      return { connections, topics, subscribers, pubsubPeers, error: '' };
     }, dbAddress)
     .catch((error) => ({ error: `page.evaluate failed: ${String(error)}` }) as any);
 
   if (view.error && !view.connections) return `    ${view.error}`;
 
-  const lines = (view.connections ?? []).map(
-    (c: any) => `    ${c.limited ? 'LIMITED' : 'direct '}  ${c.status}  ${c.peer}  ${c.addr}`,
-  );
+  const lines = (view.connections ?? []).flatMap((c: any) => [
+    `    ${c.limited ? 'LIMITED' : 'direct '}  ${c.status}  ${c.peer}  ${c.addr}`,
+    `        streams: ${(c.protocols ?? []).join(', ') || '(none)'}`,
+  ]);
   if (lines.length === 0) lines.push('    (no open connections)');
 
   const orbitTopics = (view.topics ?? []).filter((t: string) => t.startsWith('/orbitdb/'));
+  const pubsubPeers: string[] = view.pubsubPeers ?? [];
   lines.push(`    gossipsub topics: ${view.topics?.length ?? 0} total, ${orbitTopics.length} /orbitdb/`);
   lines.push(`    subscribed to this database's topic: ${orbitTopics.includes(dbAddress) ? 'yes' : 'NO'}`);
+  // If the relay is not a gossipsub peer, nothing the browser subscribes to can
+  // ever reach it — the libp2p connection being open says nothing about that.
+  lines.push(`    gossipsub peers: ${pubsubPeers.join(', ') || '(none)'}`);
   lines.push(`    peers subscribed to it, as the browser sees them: ${(view.subscribers ?? []).join(', ') || '(none)'}`);
   if (view.error) lines.push(`    ${view.error}`);
 
