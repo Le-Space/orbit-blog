@@ -230,6 +230,76 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * The relay's own view of itself, sampled either side of a wait.
+ *
+ * `syncOperations` is the interesting one: the counter is incremented at the top
+ * of every sync, whatever triggered it. If it does not move while we wait, the
+ * relay never started — which separates "discovery never fired" from "a sync ran
+ * and produced nothing". `connections.active` says whether the relay sees the
+ * browser at all, which the browser-side peer assertions cannot tell us.
+ */
+type RelaySnapshot = {
+  origin: string;
+  version: string;
+  connections: number | null;
+  totalPinned: number | null;
+  syncOperations: number | null;
+  failedSyncs: number | null;
+  error: string;
+};
+
+async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
+  try {
+    const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(LISTING_TIMEOUT_MS) });
+    if (!response.ok) return null;
+    return (await response.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRelaySnapshot(origin: string): Promise<RelaySnapshot> {
+  const [health, stats] = await Promise.all([
+    fetchJson(`${origin}/health`),
+    fetchJson(`${origin}/pinning/stats`),
+  ]);
+
+  const connections = (health?.connections as { active?: number } | undefined)?.active;
+
+  return {
+    origin,
+    version: typeof health?.version === 'string' ? health.version : 'unknown',
+    connections: typeof connections === 'number' ? connections : null,
+    totalPinned: typeof stats?.totalPinned === 'number' ? stats.totalPinned : null,
+    syncOperations: typeof stats?.syncOperations === 'number' ? stats.syncOperations : null,
+    failedSyncs: typeof stats?.failedSyncs === 'number' ? stats.failedSyncs : null,
+    error: health || stats ? '' : 'no response from /health or /pinning/stats',
+  };
+}
+
+function fetchRelaySnapshots(origins: string[]): Promise<RelaySnapshot[]> {
+  return Promise.all(origins.map(fetchRelaySnapshot));
+}
+
+function formatSnapshotDelta(before: RelaySnapshot[], after: RelaySnapshot[]): string {
+  if (after.length === 0) return '    (no metrics origin configured)';
+  const pair = (a: number | null, b: number | null) => `${a ?? '?'} -> ${b ?? '?'}`;
+  return after
+    .map((now) => {
+      const then = before.find((candidate) => candidate.origin === now.origin);
+      if (now.error) return `    ${now.origin}  ${now.error}`;
+      return [
+        `    ${now.origin}  version=${now.version}`,
+        `connections ${pair(then?.connections ?? null, now.connections)}`,
+        `syncOperations ${pair(then?.syncOperations ?? null, now.syncOperations)}`,
+        `failedSyncs ${pair(then?.failedSyncs ?? null, now.failedSyncs)}`,
+        `totalPinned ${pair(then?.totalPinned ?? null, now.totalPinned)}`,
+      ].join('  ');
+    })
+    .join('\n');
+}
+
+/**
  * Wait for the relay to list `dbAddress` with a `lastSyncedAt`, over p2p only.
  *
  * The relay is supposed to find a database by itself. `orbitdb-relay` subscribes
@@ -266,6 +336,7 @@ export async function waitForRelayDatabaseListing(
   const dbAddress = normalizeOrbitDbAddress(dbAddressRaw);
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
+  const snapshotBefore = await fetchRelaySnapshots(metricsOrigins);
 
   let lastListing: RelayDatabaseListing = { probe: 'unknown', row: null, attempts: [] };
 
@@ -283,6 +354,7 @@ export async function waitForRelayDatabaseListing(
     await sleep(POLL_INTERVAL_MS);
   }
 
+  const snapshotAfter = await fetchRelaySnapshots(metricsOrigins);
   const diagnosticSync = await requestRelayDatabaseSyncAny(metricsOrigins, dbAddress);
 
   throw new Error(
@@ -292,6 +364,10 @@ export async function waitForRelayDatabaseListing(
       `  final probe: ${lastListing.probe}`,
       '  GET /pinning/databases (last poll):',
       formatListingAttempts(lastListing.attempts),
+      '  relay state, sampled before and after the wait:',
+      formatSnapshotDelta(snapshotBefore, snapshotAfter),
+      '    syncOperations unchanged -> the relay never started a sync; discovery did not fire',
+      '    connections 0            -> the relay does not see the browser at all',
       '  POST /pinning/sync (diagnostic only, sent after the wait failed):',
       formatSyncAttempts(diagnosticSync),
       '    ok   -> the sync works; gossipsub discovery never reached the relay',
