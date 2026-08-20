@@ -5,9 +5,8 @@ import {
   getRelayTargetLabel,
 } from './relayTestEnv';
 import {
-  fetchRelayDatabaseListingAny,
   getRelayMetricsOrigins,
-  requestRelayDatabaseSyncAny,
+  waitForRelayDatabaseListing,
 } from './relayPinning';
 
 const PNG_BASE64 =
@@ -113,22 +112,11 @@ test.describe('AI image upload replicates to relay pinning service', () => {
 
     expect(uploadedInfo?.mediaDbAddress).toMatch(/^\/orbitdb\/[a-zA-Z0-9]+$/);
 
-    await requestRelayDatabaseSyncAny(metricsOrigins, uploadedInfo!.mediaDbAddress);
-
-    let relayLastSyncedAt: string | undefined;
-    await expect
-      .poll(
-        async () => {
-          const listing = await fetchRelayDatabaseListingAny(metricsOrigins, uploadedInfo!.mediaDbAddress);
-          relayLastSyncedAt = listing.row?.lastSyncedAt;
-          return relayLastSyncedAt ?? '';
-        },
-        {
-          timeout: 120000,
-          message: `wait for ${getRelayTargetLabel()} to list mediaDB in /pinning/databases`,
-        },
-      )
-      .not.toBe('');
+    const relayLastSyncedAt = await waitForRelayDatabaseListing(
+      metricsOrigins,
+      uploadedInfo!.mediaDbAddress,
+      'mediaDB',
+    );
 
     expect(Date.parse(relayLastSyncedAt ?? '')).toBeGreaterThanOrEqual(
       Date.parse(uploadedInfo?.createdAt ?? '') - RELAY_SYNC_CLOCK_SKEW_MS,

@@ -2,16 +2,14 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   getRelayMetricsOriginsRaw,
   getRelaySeedPeerIds,
-  getRelayTargetLabel,
 } from './relayTestEnv';
 import {
   waitForPeerCount,
   waitForRelayPeerConnection,
 } from './peerConnectivity';
 import {
-  fetchRelayDatabaseListingAny,
   getRelayMetricsOrigins,
-  requestRelayDatabaseSyncAny,
+  waitForRelayDatabaseListing,
 } from './relayPinning';
 
 const PNG_BASE64 =
@@ -133,19 +131,7 @@ async function readCurrentDbAddresses(page: Page) {
 }
 
 async function waitForRelayListing(metricsOrigins: string[], dbAddress: string, label: string) {
-  await requestRelayDatabaseSyncAny(metricsOrigins, dbAddress);
-  await expect
-    .poll(
-      async () => {
-        const listing = await fetchRelayDatabaseListingAny(metricsOrigins, dbAddress);
-        return listing.row?.lastSyncedAt ?? '';
-      },
-      {
-        timeout: 120000,
-        message: `wait for ${getRelayTargetLabel()} to list ${label} in /pinning/databases`,
-      },
-    )
-    .not.toBe('');
+  await waitForRelayDatabaseListing(metricsOrigins, dbAddress, label);
 }
 
 async function expectDbManagerLedGreen(page: Page, key: keyof CurrentDbAddresses) {

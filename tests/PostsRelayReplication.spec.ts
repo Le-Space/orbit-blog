@@ -2,16 +2,14 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   getRelayMetricsOriginsRaw,
   getRelaySeedPeerIds,
-  getRelayTargetLabel,
 } from './relayTestEnv';
 import {
   waitForPeerCount,
   waitForRelayPeerConnection,
 } from './peerConnectivity';
 import {
-  fetchRelayDatabaseListingAny,
   getRelayMetricsOrigins,
-  requestRelayDatabaseSyncAny,
+  waitForRelayDatabaseListing,
 } from './relayPinning';
 
 type CreatedPostInfo = {
@@ -134,22 +132,11 @@ test.describe('Post creation replicates to relay database sync history', () => {
 
     expect(createdPostInfo?.postsDbAddress).toMatch(/^\/orbitdb\/[a-zA-Z0-9]+$/);
 
-    await requestRelayDatabaseSyncAny(metricsOrigins, createdPostInfo!.postsDbAddress);
-
-    let relayLastSyncedAt: string | undefined;
-    await expect
-      .poll(
-        async () => {
-          const listing = await fetchRelayDatabaseListingAny(metricsOrigins, createdPostInfo!.postsDbAddress);
-          relayLastSyncedAt = listing.row?.lastSyncedAt;
-          return relayLastSyncedAt ?? '';
-        },
-        {
-          timeout: 120000,
-          message: `wait for ${getRelayTargetLabel()} to list postsDB in /pinning/databases`,
-        },
-      )
-      .not.toBe('');
+    const relayLastSyncedAt = await waitForRelayDatabaseListing(
+      metricsOrigins,
+      createdPostInfo!.postsDbAddress,
+      'postsDB',
+    );
 
     expect(Date.parse(relayLastSyncedAt ?? '')).toBeGreaterThanOrEqual(
       createdPostInfo!.createdAtMs - RELAY_SYNC_CLOCK_SKEW_MS,
